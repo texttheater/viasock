@@ -315,8 +315,9 @@ def _main():
                             'output are prelude and should be repeated '
                             'for every client')
     args = parser.parse_args()
-    input_terminator = re.compile(args.input_terminator.encode())
-    output_terminator = re.compile(args.output_terminator.encode())
+    if args.subcommand in ('run', 'server', 'client'):
+        input_terminator = re.compile(args.input_terminator.encode())
+        output_terminator = re.compile(args.output_terminator.encode())
     try:
         if args.subcommand == 'run':
             _run(args.program, args.args, args.process_timeout,
