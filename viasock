@@ -1,0 +1,315 @@
+#!/usr/bin/env python3
+
+
+import argparse
+import concurrent.futures
+import errno
+import hashlib
+import os
+import re
+import socket
+import socketserver
+import subprocess
+import sys
+import threading
+import time
+
+
+## PLANNED FEATURES ###########################################################
+
+
+# TODO write server/process STDERR to a log file
+# TODO make server timeout configurable
+# TODO add a timeout for reading from process for more robustness
+
+
+### UTILITIES #################################################################
+
+
+def _now():
+    return time.time()
+
+
+def _mtime(path, default=0):
+    """
+    Returns the mtime of the file at the specified path. Returns default if
+    file does not exist. An OSError is raised if the file cannot be stat'd.
+    """
+    try:
+        return os.stat(path).st_mtime
+    except OSError as e:
+        if e.errno == errno.ENOENT:
+            return default
+        raise e
+
+
+def _makedirs(path):
+    try:
+        os.makedirs(path)
+    except OSError as error:
+        if error.errno != errno.EEXIST:
+            raise error
+
+
+def _records(stream, terminator_line_pattern):
+    """
+    Reads from a file-like object, chopping the data up into records terminated
+    by lines matching (after chomping off the line terminator) the given
+    terminator pattern. Returns a sequence of the records. Raises
+    _IncompleteRecord if the last record does not end with a line matching the
+    terminator pattern.
+    """
+    record = b''
+    for line in stream:
+        record += line
+        (chomped,) = line.splitlines()
+        if terminator_line_pattern.match(chomped):
+            yield record
+            record = b''
+    if record:
+        raise _IncompleteRecord()
+
+
+class _ViasockError(Exception):
+
+    def __init__(self, message):
+        Exception.__init__(self)
+        self.message = message
+
+
+class _IncompleteRecord(Exception):
+    pass
+
+
+### SERVER ####################################################################
+
+
+class _Handler(socketserver.StreamRequestHandler):
+
+    def handle(self):
+        self.wfile.write(self.server.output_prelude)
+        try:
+            for input_record in _records(self.rfile,
+                                         self.server.input_terminator):
+                # Write input to process asynchronously while already starting
+                # to read the output, otherwise writing might deadlock:
+                def write():
+                    self.server.proc.stdin.write(input_record)
+                    self.server.proc.stdin.flush()
+                fut_write = self.server.executor.submit(write) # FIXME it never executes it??
+                try:
+                    output_record = next(self.server.output_records)
+                except StopIteration:
+                    raise _ViasockError('process stopped sending output')
+                except _IncompleteRecord:
+                    raise _ViasockError('process stopped sending output '
+                                        'mid-record')
+                fut_write.result() # Raise any exception
+                self.wfile.write(output_record)
+        except _IncompleteRecord:
+            raise _ViasockError('client did not terminate input record')
+
+
+class _ProcessServer(socketserver.UnixStreamServer):
+
+    # TODO Use UnixStreamServer via composition, not inheritance
+
+    def __init__(self, address, program, args, handler, input_terminator,
+                 output_terminator, output_prelude_length, executor):
+        socketserver.UnixStreamServer.__init__(self, address, handler)
+        self.program = program
+        self.args = args
+        self.input_terminator = input_terminator
+        self.output_terminator = output_terminator
+        self.output_prelude_length = output_prelude_length
+        self.executor = executor
+        self.timeout = 5
+        self.shutdown_flag = False
+
+    def __enter__(self):
+        self.proc = subprocess.Popen([self.program] + self.args,
+                                     stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE)
+        self.proc.__enter__()
+        self.output_records = _records(self.proc.stdout,
+                                       self.output_terminator)
+        self.output_prelude = b''
+        for i in range(self.output_prelude_length):
+            self.output_prelude += next(self.output_records)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.proc.__exit__(None, None, None)
+
+    def handle_timeout(self):
+        self.shutdown_flag = True
+
+
+# TODO move more stuff from this method into _ProcessServer
+def _server(socket, program, args, input_terminator, output_terminator,
+            output_prelude_length):
+    try:
+        with concurrent.futures.ThreadPoolExecutor(1) as executor, \
+            _ProcessServer(socket, program, args, _Handler,
+                           input_terminator, output_terminator,
+                           output_prelude_length, executor) as server:
+               while not server.shutdown_flag:
+                   server.handle_request()
+    finally:
+        try:
+            os.unlink(socket)
+        except FileNotFoundError:
+            pass
+    if server.proc.returncode != 0:
+        raise _ViasockError('process exited with status {}'.format(
+            server.proc.returncode))
+
+
+### CLIENT ####################################################################
+
+
+def _client(socket_path, input_terminator, output_terminator,
+            output_prelude_length):
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.connect(socket_path)
+        wfile = sock.makefile('wb')
+        rfile = sock.makefile('rb')
+        output_records = _records(rfile, output_terminator)
+        try:
+            for i in range(output_prelude_length):
+                sys.stdout.buffer.write(next(output_records))
+                if sys.stdout.buffer.isatty():
+                    sys.stdout.buffer.flush()
+            for input_record in _records(sys.stdin.buffer, input_terminator):
+                wfile.write(input_record)
+                wfile.flush()
+                try:
+                    output_record = next(output_records)
+                except StopIteration:
+                    raise _ViasockError('server stopped sending output')
+                except _IncompleteRecord:
+                    raise _ViasockError('server stopped sending output '
+                                        'mid-record')
+                sys.stdout.buffer.write(output_record)
+                if sys.stdout.buffer.isatty():
+                    sys.stdout.buffer.flush()
+        except _IncompleteRecord:
+            raise _ViasockError('input record was not terminated')
+
+
+### RUN #######################################################################
+
+
+def _socketname(program, args, input_terminator, output_terminator,
+                output_prelude_length):
+    """
+    Returns the name for the socket: a hash of the program, its arguments and
+    their modification times (or 0 for arguments that don't resolve to
+    existing files). The effect is (barring hash collisons) that no two
+    commands use the same socket, and a new socket (and therefore a new server)
+    is created when the program or some of the files it reads on startup
+    change.
+    """
+    h = hashlib.md5()
+    for x in [program] + args:
+        h.update(x.encode('UTF-8'))
+        h.update(str(_mtime(x)).encode('UTF-8'))
+    h.update(input_terminator.pattern)
+    h.update(output_terminator.pattern)
+    h.update(bytes(output_prelude_length))
+    return h.hexdigest()
+
+
+def _run(program, args, input_terminator, output_terminator,
+         output_prelude_length):
+    _makedirs('.viasock/sockets')
+    socket = os.path.join('.viasock/sockets', _socketname(program, args,
+        input_terminator, output_terminator, output_prelude_length))
+    success = False
+    for i in range(10): # Max. 10 retries
+        try:
+            _client(socket, input_terminator, output_terminator,
+                    output_prelude_length)
+            success = True
+            break
+        except (FileNotFoundError, ConnectionRefusedError):
+            # Spawn server
+            command = [sys.argv[0], 'server', '-t', input_terminator.pattern,
+                       '-T', output_terminator.pattern, '-P',
+                       str(output_prelude_length), socket, program] + args
+            subprocess.Popen(command, preexec_fn=os.setpgrp,
+                             #stderr=subprocess.DEVNULL) # TODO stdout, stderr
+                            )
+            # Give the server some time to start up before retrying
+            time.sleep(1)
+    if not success:
+        raise _ViasockError('tried 10 times, still no connection to server')
+
+
+### MAIN ######################################################################
+
+
+def _main():
+    parser = argparse.ArgumentParser(description='Avoid startup overhead by '
+        'automagically serverizing your scripts.')
+    subparsers = parser.add_subparsers(title='subcommands', dest='subcommand',
+                                       description='valid subcommands')
+    parser_run = subparsers.add_parser('run',
+        help='run a command via a socket server, which is automatically '
+             'started if needed (this should be the only subcommand you need)')
+    parser_server = subparsers.add_parser('server',
+        help='run a command wrapped in a socket server')
+    parser_server.add_argument('socket',
+        help='the socket file the server should listen on')
+    parser_client = subparsers.add_parser('client',
+        help='connect to a socket for input and output')
+    parser_client.add_argument('socket',
+        help='the socket file the client should connect to')
+    for p in (parser_run, parser_server):
+        p.add_argument('program', help='the program to run')
+        p.add_argument('args', help='the arguments to the program',
+                       nargs=argparse.REMAINDER)
+    for p in (parser_run, parser_server, parser_client):
+        p.add_argument('-t', '--input-terminator', default=r'',
+                       metavar='PATTERN',
+                       help='pattern used to recognize an input line that is '
+                            'the last of a record -- for 1 line = 1 record '
+                            '(default) use \'\' (matches any line); for '
+                            'records terminated by an empty line use \'^$\'; '
+                            'for EOS on a line by itself as record terminator '
+                            'use \'^EOS$\'; etc.')
+        p.add_argument('-T', '--output-terminator', default=r'',
+                       metavar='PATTERN',
+                       help='pattern used to recognize an output line that is '
+                            'the last of a record -- for 1 line = 1 record '
+                            '(default) use \'\' (matches any line); for '
+                            'records terminated by an empty line use \'^$\'; '
+                            'for EOS on a line by itself as record terminator '
+                            'use \'^EOS$\'; etc.')
+        p.add_argument('-P', '--output-prelude', type=int, default=0,
+                       metavar='INT',
+                       help='how many records at the beginning of the '
+                            'output are prelude and should be repeated '
+                            'for every client')
+    args = parser.parse_args()
+    input_terminator = re.compile(args.input_terminator.encode())
+    output_terminator = re.compile(args.output_terminator.encode())
+    try:
+        if args.subcommand == 'run':
+            _run(args.program, args.args, input_terminator, output_terminator,
+                 args.output_prelude)
+        elif args.subcommand == 'server':
+            _server(args.socket, args.program, args.args, input_terminator,
+                    output_terminator, args.output_prelude)
+        elif args.subcommand == 'client':
+            _client(args.socket, input_terminator, output_terminator,
+                    args.output_prelude)
+        else:
+            parser.print_help()
+    except _ViasockError as e:
+        print('ERROR: {}'.format(e.message), file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    _main()
