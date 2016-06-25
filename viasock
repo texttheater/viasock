@@ -121,8 +121,6 @@ class _Handler(socketserver.StreamRequestHandler):
 
 class _ProcessServer(socketserver.UnixStreamServer):
 
-    # TODO Use UnixStreamServer via composition, not inheritance
-
     def __init__(self, address, program, args, process_timeout, handler,
                  input_terminator, output_terminator, output_prelude_length,
                  executor):
@@ -157,7 +155,6 @@ class _ProcessServer(socketserver.UnixStreamServer):
         self.shutdown_flag = True
 
 
-# TODO move more stuff from this method into _ProcessServer
 def _server(socket, program, args, process_timeout, input_terminator,
             output_terminator, output_prelude_length):
     try:
