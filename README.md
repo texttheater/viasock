@@ -61,6 +61,12 @@ correspond to any input records and should be repeated at the beginning of the
 output for every client. Specify the number of such “prelude” records using the
 `-P` option.
 
+If the process does not follow the protocol properly, it may happen that
+viasock gets deadlocked after sending an input record, waiting for an output
+record that never comes. To fail more gracefully in such situations, specify a
+timeout using the `-w` option. This is the maximum number of seconds the
+process is allowed to take for sending the output record.
+
 Run `viasock run -h` for help and details.
 
 Getting involved
