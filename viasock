@@ -139,7 +139,7 @@ class _ProcessServer(socketserver.UnixStreamServer):
         self.output_terminator = output_terminator
         self.output_prelude_length = output_prelude_length
         self.executor = executor
-        self.timeout = 5
+        self.timeout = 15
         self.shutdown_flag = False
 
     def __enter__(self):

@@ -34,7 +34,7 @@ happens only once, not every time it is used.
 
 Viasock will also
 
-* shut down the server if it is not used for a while (currently 5 seconds),
+* shut down the server if it is not used for a while (currently 15 seconds),
 * start a new server if any of the files the command might need (such as
   `./parse` or `model`) are updated, making sure you use the
   current version.
