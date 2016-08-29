@@ -79,6 +79,13 @@ def _records(stream, terminator_line_pattern, timeout=None):
         raise _IncompleteRecord()
 
 
+def _fork(fun, *args):
+    if os.fork() == 0:
+        os.setsid()
+        fun(*args)
+        sys.exit()
+
+
 class _ViasockError(Exception):
 
     def __init__(self, message):
@@ -245,17 +252,9 @@ def _run(program, args, process_timeout, input_terminator, output_terminator,
             break
         except (FileNotFoundError, ConnectionRefusedError):
             # Spawn server
-            command = [sys.argv[0], 'server']
-            command.extend(('-t', input_terminator.pattern))
-            command.extend(('-T', output_terminator.pattern))
-            command.extend(('-P', str(output_prelude_length)))
-            if process_timeout is not None:
-                command.extend(('-w', str(process_timeout)))
-            command.extend((socket, program))
-            command.extend(args)
-            subprocess.Popen(command, preexec_fn=os.setpgrp,
-                             #stderr=subprocess.DEVNULL) # TODO stdout, stderr
-                            )
+            _fork(_server, socket, program, args, process_timeout,
+                  input_terminator, output_terminator, output_prelude_length)
+            # TODO stderr
             # Give the server some time to start up before retrying
             time.sleep(1)
     if not success:
