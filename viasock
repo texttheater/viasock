@@ -111,7 +111,7 @@ class _Handler(socketserver.StreamRequestHandler):
                 def write():
                     self.server.proc.stdin.write(input_record)
                     self.server.proc.stdin.flush()
-                fut_write = self.server.executor.submit(write) # FIXME it never executes it??
+                fut_write = self.server.executor.submit(write)
                 try:
                     output_record = next(self.server.output_records)
                 except StopIteration:
