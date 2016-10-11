@@ -20,7 +20,6 @@ import time
 
 
 # TODO write server/process STDERR to a log file
-# TODO make server timeout configurable
 
 
 ### UTILITIES #################################################################
@@ -130,7 +129,7 @@ class _ProcessServer(socketserver.UnixStreamServer):
 
     def __init__(self, address, program, args, process_timeout, handler,
                  input_terminator, output_terminator, output_prelude_length,
-                 executor):
+                 executor, server_timeout):
         socketserver.UnixStreamServer.__init__(self, address, handler)
         self.program = program
         self.args = args
@@ -139,7 +138,7 @@ class _ProcessServer(socketserver.UnixStreamServer):
         self.output_terminator = output_terminator
         self.output_prelude_length = output_prelude_length
         self.executor = executor
-        self.timeout = 15
+        self.timeout = server_timeout
         self.shutdown_flag = False
 
     def __enter__(self):
@@ -163,12 +162,13 @@ class _ProcessServer(socketserver.UnixStreamServer):
 
 
 def _server(socket, program, args, process_timeout, input_terminator,
-            output_terminator, output_prelude_length):
+            output_terminator, output_prelude_length, server_timeout):
     try:
         with concurrent.futures.ThreadPoolExecutor(1) as executor, \
             _ProcessServer(socket, program, args, process_timeout, _Handler,
                            input_terminator, output_terminator,
-                           output_prelude_length, executor) as server:
+                           output_prelude_length, executor, server_timeout) \
+            as server:
                while not server.shutdown_flag:
                    server.handle_request()
     finally:
@@ -217,7 +217,7 @@ def _client(socket_path, input_terminator, output_terminator,
 
 
 def _socketname(program, args, process_timeout, input_terminator,
-                output_terminator, output_prelude_length):
+                output_terminator, output_prelude_length, server_timeout):
     """
     Returns the name for the socket: a hash of the program, its arguments and
     their modification times (or 0 for arguments that don't resolve to
@@ -234,15 +234,16 @@ def _socketname(program, args, process_timeout, input_terminator,
     h.update(input_terminator.pattern)
     h.update(output_terminator.pattern)
     h.update(bytes(output_prelude_length))
+    h.update(str(server_timeout).encode('UTF-8'))
     return h.hexdigest()
 
 
 def _run(program, args, process_timeout, input_terminator, output_terminator,
-         output_prelude_length):
+         output_prelude_length, server_timeout):
     _makedirs('.viasock/sockets')
     socket = os.path.join('.viasock/sockets', _socketname(program, args,
         process_timeout, input_terminator, output_terminator,
-        output_prelude_length))
+        output_prelude_length, server_timeout))
     success = False
     for i in range(10): # Max. 10 retries
         try:
@@ -253,7 +254,8 @@ def _run(program, args, process_timeout, input_terminator, output_terminator,
         except (FileNotFoundError, ConnectionRefusedError):
             # Spawn server
             _fork(_server, socket, program, args, process_timeout,
-                  input_terminator, output_terminator, output_prelude_length)
+                  input_terminator, output_terminator, output_prelude_length,
+                  server_timeout)
             # TODO stderr
             # Give the server some time to start up before retrying
             time.sleep(1)
@@ -288,6 +290,9 @@ def _main():
                        help='how long to wait (in s) for the output record '
                        'after sending an input record, before aborting with a '
                        'timeout error -- default is forever')
+        p.add_argument('-W', '--server-timeout', type=float, default=60,
+                       help='after how many seconds to shut down the server '
+                       'when there are no requests -- default is 60')
     for p in (parser_run, parser_server, parser_client):
         p.add_argument('-t', '--input-terminator', default=r'',
                        metavar='PATTERN',
@@ -317,10 +322,12 @@ def _main():
     try:
         if args.subcommand == 'run':
             _run(args.program, args.args, args.process_timeout,
-                 input_terminator, output_terminator, args.output_prelude)
+                 input_terminator, output_terminator, args.output_prelude,
+                 args.server_timeout)
         elif args.subcommand == 'server':
             _server(args.socket, args.program, args.args, args.process_timeout,
-                    input_terminator, output_terminator, args.output_prelude)
+                    input_terminator, output_terminator, args.output_prelude,
+                    args.server_timeout)
         elif args.subcommand == 'client':
             _client(args.socket, input_terminator, output_terminator,
                     args.output_prelude)
