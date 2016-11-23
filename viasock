@@ -102,34 +102,30 @@ class _IncompleteRecord(Exception):
 class _Handler(socketserver.StreamRequestHandler):
 
     def handle(self):
+        self.wfile.write(self.server.output_prelude)
         try:
-            self.wfile.write(self.server.output_prelude)
-            try:
-                for input_record in _records(self.rfile,
-                                             self.server.input_terminator):
-                    # Write input to process asynchronously while already
-                    # starting to read the output, otherwise writing might
-                    # deadlock:
-                    def write():
-                        self.server.proc.stdin.write(input_record)
-                        self.server.proc.stdin.flush()
-                    fut_write = self.server.executor.submit(write)
-                    # FIXME socketserver only prints a stack trace for these
-                    # exceptions, does not stop the server.
-                    try:
-                        output_record = next(self.server.output_records)
-                    except StopIteration:
-                        raise _ViasockError('process stopped sending output')
-                    except _IncompleteRecord:
-                        raise _ViasockError('process stopped sending output '
-                                            'mid-record')
-                    fut_write.result() # Raise any exception
-                    self.wfile.write(output_record)
-            except _IncompleteRecord:
-                raise _ViasockError('client did not terminate input record')
-        except Exception as e:
-            self.server.exception = e
-            self.server.shutdown_flag = True
+            for input_record in _records(self.rfile,
+                                         self.server.input_terminator):
+                # Write input to process asynchronously while already
+                # starting to read the output, otherwise writing might
+                # deadlock:
+                def write():
+                    self.server.proc.stdin.write(input_record)
+                    self.server.proc.stdin.flush()
+                fut_write = self.server.executor.submit(write)
+                # FIXME socketserver only prints a stack trace for these
+                # exceptions, does not stop the server.
+                try:
+                    output_record = next(self.server.output_records)
+                except StopIteration:
+                    raise _ViasockError('process stopped sending output')
+                except _IncompleteRecord:
+                    raise _ViasockError('process stopped sending output '
+                                        'mid-record')
+                fut_write.result() # Raise any exception
+                self.wfile.write(output_record)
+        except _IncompleteRecord:
+            raise _ViasockError('client did not terminate input record')
 
 
 class _ProcessServer(socketserver.UnixStreamServer):
@@ -154,6 +150,7 @@ class _ProcessServer(socketserver.UnixStreamServer):
                                      stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE)
         self.proc.__enter__()
+        self._supervise()
         self.output_records = _records(self.proc.stdout,
                                        self.output_terminator,
                                        timeout=self.process_timeout)
@@ -163,9 +160,24 @@ class _ProcessServer(socketserver.UnixStreamServer):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self.proc.__exit__(None, None, None)
+        try:
+            self.proc.__exit__(None, None, None)
+        except BrokenPipeError:
+            pass
+
+    def _supervise(self):
+        """
+        Starts a thread that sets self.shutdown_flag to True when the process
+        exits.
+        """
 
     def handle_timeout(self):
+        socketserver.UnixStreamServer.handle_timeout(self)
+        self.shutdown_flag = True
+
+    def handle_error(self, request, client_address):
+        socketserver.UnixStreamServer.handle_error(self, request,
+                                                   client_address)
         self.shutdown_flag = True
 
 
