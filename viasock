@@ -102,27 +102,34 @@ class _IncompleteRecord(Exception):
 class _Handler(socketserver.StreamRequestHandler):
 
     def handle(self):
-        self.wfile.write(self.server.output_prelude)
         try:
-            for input_record in _records(self.rfile,
-                                         self.server.input_terminator):
-                # Write input to process asynchronously while already starting
-                # to read the output, otherwise writing might deadlock:
-                def write():
-                    self.server.proc.stdin.write(input_record)
-                    self.server.proc.stdin.flush()
-                fut_write = self.server.executor.submit(write)
-                try:
-                    output_record = next(self.server.output_records)
-                except StopIteration:
-                    raise _ViasockError('process stopped sending output')
-                except _IncompleteRecord:
-                    raise _ViasockError('process stopped sending output '
-                                        'mid-record')
-                fut_write.result() # Raise any exception
-                self.wfile.write(output_record)
-        except _IncompleteRecord:
-            raise _ViasockError('client did not terminate input record')
+            self.wfile.write(self.server.output_prelude)
+            try:
+                for input_record in _records(self.rfile,
+                                             self.server.input_terminator):
+                    # Write input to process asynchronously while already
+                    # starting to read the output, otherwise writing might
+                    # deadlock:
+                    def write():
+                        self.server.proc.stdin.write(input_record)
+                        self.server.proc.stdin.flush()
+                    fut_write = self.server.executor.submit(write)
+                    # FIXME socketserver only prints a stack trace for these
+                    # exceptions, does not stop the server.
+                    try:
+                        output_record = next(self.server.output_records)
+                    except StopIteration:
+                        raise _ViasockError('process stopped sending output')
+                    except _IncompleteRecord:
+                        raise _ViasockError('process stopped sending output '
+                                            'mid-record')
+                    fut_write.result() # Raise any exception
+                    self.wfile.write(output_record)
+            except _IncompleteRecord:
+                raise _ViasockError('client did not terminate input record')
+        except Exception as e:
+            self.server.exception = e
+            self.server.shutdown_flag = True
 
 
 class _ProcessServer(socketserver.UnixStreamServer):
@@ -140,6 +147,7 @@ class _ProcessServer(socketserver.UnixStreamServer):
         self.executor = executor
         self.timeout = server_timeout
         self.shutdown_flag = False
+        self.exception = None
 
     def __enter__(self):
         self.proc = subprocess.Popen([self.program] + self.args,
@@ -176,6 +184,8 @@ def _server(socket, program, args, process_timeout, input_terminator,
             os.unlink(socket)
         except FileNotFoundError:
             pass
+    if server.exception:
+        raise server.exception
     if server.proc.returncode != 0:
         raise _ViasockError('process exited with status {}'.format(
             server.proc.returncode))
