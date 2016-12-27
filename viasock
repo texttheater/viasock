@@ -114,8 +114,6 @@ class _Handler(socketserver.StreamRequestHandler):
                         self.server.proc.stdin.write(input_record)
                         self.server.proc.stdin.flush()
                     fut_write = self.server.executor.submit(write)
-                    # FIXME socketserver only prints a stack trace for these
-                    # exceptions, does not stop the server.
                     try:
                         output_record = next(self.server.output_records)
                     except StopIteration:
@@ -123,72 +121,73 @@ class _Handler(socketserver.StreamRequestHandler):
                     except _IncompleteRecord:
                         raise _ViasockError('process stopped sending output '
                                             'mid-record')
-                    fut_write.result() # Raise any exception
+                    fut_write.result() # raise any exception
                     self.wfile.write(output_record)
             except _IncompleteRecord:
                 raise _ViasockError('client did not terminate input record')
         except Exception as e:
+            # store any exception so we can give an informative error message
             self.server.exception = e
-            self.server.shutdown_flag = True
+            # raise it, thereby triggering the server's error handling
+            # mechanism (right?)
+            raise e
 
 
-class _ProcessServer(socketserver.UnixStreamServer):
+class _Server(socketserver.UnixStreamServer):
 
-    def __init__(self, address, program, args, process_timeout, handler,
-                 input_terminator, output_terminator, output_prelude_length,
-                 executor, server_timeout):
-        socketserver.UnixStreamServer.__init__(self, address, handler)
-        self.program = program
-        self.args = args
-        self.process_timeout = process_timeout
-        self.input_terminator = input_terminator
-        self.output_terminator = output_terminator
-        self.output_prelude_length = output_prelude_length
+    def __init__(self, socket, executor, proc, input_terminator,
+                 output_prelude, output_records, server_timeout):
+        socketserver.UnixStreamServer.__init__(self, socket, _Handler)
+        # Instance variables only used via the _Handler objects created for
+        # each request:
         self.executor = executor
-        self.timeout = server_timeout
-        self.shutdown_flag = False
+        self.proc = proc
+        self.input_terminator = input_terminator
+        self.output_prelude = output_prelude
+        self.output_records = output_records
         self.exception = None
-
-    def __enter__(self):
-        self.proc = subprocess.Popen([self.program] + self.args,
-                                     stdin=subprocess.PIPE,
-                                     stdout=subprocess.PIPE)
-        self.proc.__enter__()
-        self.output_records = _records(self.proc.stdout,
-                                       self.output_terminator,
-                                       timeout=self.process_timeout)
-        self.output_prelude = b''
-        for i in range(self.output_prelude_length):
-            self.output_prelude += next(self.output_records)
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.proc.__exit__(None, None, None)
+        # Other instance variables:
+        self.shutdown_flag = False
+        self.timeout = server_timeout # timeout defined by socketserver API
 
     def handle_timeout(self):
         self.shutdown_flag = True
 
+    def handle_error(self):
+        self.shutdown_flag = True
 
-def _server(socket, program, args, process_timeout, input_terminator,
-            output_terminator, output_prelude_length, server_timeout):
+
+def _server(socket, program, args, input_terminator, output_terminator,
+            output_prelude_length, process_timeout, server_timeout):
     try:
         with concurrent.futures.ThreadPoolExecutor(1) as executor, \
-            _ProcessServer(socket, program, args, process_timeout, _Handler,
-                           input_terminator, output_terminator,
-                           output_prelude_length, executor, server_timeout) \
-            as server:
-               while not server.shutdown_flag:
-                   server.handle_request()
+             subprocess.Popen([program] + args, stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE) as proc:
+            output_records = _records(proc.stdout, output_terminator,
+                                      process_timeout)
+            output_prelude = b''
+            for i in range(output_prelude_length):
+                output_prelude += next(output_records)
+                # We could use the serve_forever and shutdown methods. However,
+                # that could lead to a race condition where the process crashes,
+                # the handle notices and calls shutdown, but the server starts
+                # handling another request before shutting down. So we handle
+                # requests in a loop and use a shutdown flag, checking whether
+                # it is set after every request:
+            server = _Server(socket, executor, proc, input_terminator,
+                             output_prelude, output_records, server_timeout)
+            while not server.shutdown_flag:
+                server.handle_request()
+        if server.exception:
+            raise sever.exception
+        if proc.returncode != 0:
+            raise _ViasockError('process exited with status {}'.format(
+                proc.returncode))
     finally:
         try:
             os.unlink(socket)
         except FileNotFoundError:
             pass
-    if server.exception:
-        raise server.exception
-    if server.proc.returncode != 0:
-        raise _ViasockError('process exited with status {}'.format(
-            server.proc.returncode))
 
 
 ### CLIENT ####################################################################
@@ -248,8 +247,8 @@ def _socketname(program, args, process_timeout, input_terminator,
     return h.hexdigest()
 
 
-def _run(program, args, process_timeout, input_terminator, output_terminator,
-         output_prelude_length, server_timeout):
+def _run(program, args, input_terminator, output_terminator,
+         output_prelude_length, process_timeout, server_timeout):
     _makedirs('.viasock/sockets')
     socket = os.path.join('.viasock/sockets', _socketname(program, args,
         process_timeout, input_terminator, output_terminator,
@@ -263,8 +262,8 @@ def _run(program, args, process_timeout, input_terminator, output_terminator,
             break
         except (FileNotFoundError, ConnectionRefusedError):
             # Spawn server
-            _fork(_server, socket, program, args, process_timeout,
-                  input_terminator, output_terminator, output_prelude_length,
+            _fork(_server, socket, program, args, input_terminator,
+                  output_terminator, output_prelude_length, process_timeout,
                   server_timeout)
             # TODO stderr
             # Give the server some time to start up before retrying
@@ -331,13 +330,13 @@ def _main():
         output_terminator = re.compile(args.output_terminator.encode())
     try:
         if args.subcommand == 'run':
-            _run(args.program, args.args, args.process_timeout,
-                 input_terminator, output_terminator, args.output_prelude,
+            _run(args.program, args.args, input_terminator, output_terminator,
+                 args.output_prelude, args.process_timeout,
                  args.server_timeout)
         elif args.subcommand == 'server':
-            _server(args.socket, args.program, args.args, args.process_timeout,
-                    input_terminator, output_terminator, args.output_prelude,
-                    args.server_timeout)
+            _server(args.socket, args.program, args.args, input_terminator,
+                    output_terminator, args.output_prelude,
+                    args.process_timeout, args.server_timeout)
         elif args.subcommand == 'client':
             _client(args.socket, input_terminator, output_terminator,
                     args.output_prelude)
