@@ -294,10 +294,12 @@ def _server_id(program, args, process_timeout, input_terminator,
 
 def _run(program, args, input_terminator, output_terminator,
          output_prelude_length, process_timeout, server_timeout):
-    _makedirs('.viasock/sockets')
-    socket = os.path.join('.viasock/sockets', _server_id(program, args,
-        process_timeout, input_terminator, output_terminator,
-        output_prelude_length, server_timeout))
+    server_id = _server_id(program, args, process_timeout, input_terminator,
+                           output_terminator, output_prelude_length,
+                           server_timeout)
+    server_dir = os.path.join('.viasock', 'servers', server_id)
+    _makedirs(server_dir)
+    socket = os.path.join(server_dir, 'socket')
     success = False
     for i in range(10): # Max. 10 retries
         try:
