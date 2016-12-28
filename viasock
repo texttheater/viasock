@@ -5,6 +5,7 @@ import argparse
 import concurrent.futures
 import errno
 import hashlib
+import logging
 import os
 import re
 import select
@@ -99,6 +100,19 @@ class _IncompleteRecord(Exception):
     pass
 
 
+### LOGGING ###################################################################
+
+
+def _create_stderr_logger(program):
+    logger = logging.getLogger('Viasock process log')
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(
+        '[{}] %(message)s'.format(program)))
+    logger.addHandler(handler)
+    return logger
+
+
 ### SERVER ####################################################################
 
 
@@ -160,17 +174,34 @@ class _Server(socketserver.UnixStreamServer):
         self.shutdown_flag = True
 
 
-def _server(socket, program, args, input_terminator, output_terminator,
+def _server(socket, program, args, logger, input_terminator, output_terminator,
             output_prelude_length, process_timeout, server_timeout):
     try:
-        with concurrent.futures.ThreadPoolExecutor(1) as executor, \
+        with concurrent.futures.ThreadPoolExecutor(2) as executor, \
              subprocess.Popen([program] + args, stdin=subprocess.PIPE,
-                              stdout=subprocess.PIPE) as proc:
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) \
+                 as proc:
+            # Handle proc.stderr:
+            def handle_stderr():
+                for line in proc.stderr:
+                    # Convert line from bytes to str if possible:
+                    try:
+                        line = line.decode()
+                    except UnicodeDecodeError:
+                        pass
+                    # Chomp line:
+                    (line,) = line.splitlines()
+                    # Log line:
+                    logger.info(line)
+            fut_handle_stderr = executor.submit(handle_stderr)
+            # Read records from proc.stdout:
             output_records = _records(proc.stdout, output_terminator,
                                       process_timeout)
+            # Determine the output prelude:
             output_prelude = b''
             for i in range(output_prelude_length):
                 output_prelude += next(output_records)
+            # Start the socket server:
             # We could use the serve_forever and shutdown methods. However,
             # that could lead to a race condition where the process crashes,
             # the handler notices and calls shutdown, but the server starts
@@ -179,13 +210,17 @@ def _server(socket, program, args, input_terminator, output_terminator,
             # it is set after every request:
             server = _Server(socket, executor, proc, input_terminator,
                              output_prelude, output_records, server_timeout)
-            while not server.shutdown_flag:
-                server.handle_request()
-            if server.exception:
-                raise server.exception
-            if proc.returncode != 0:
-                raise _ViasockError('process exited with status {}'.format(
-                    proc.returncode))
+            try:
+                while not server.shutdown_flag:
+                    server.handle_request()
+            finally:
+                proc.stdin.close()
+                fut_handle_stderr.result()
+        if server.exception:
+            raise server.exception
+        if proc.returncode != 0:
+            raise _ViasockError('process exited with status {}'.format(
+                proc.returncode))
     except BrokenPipeError:
         raise _ViasockError(
             'process exited unexpectedly with status {}'.format(
@@ -271,7 +306,8 @@ def _run(program, args, input_terminator, output_terminator,
             break
         except (FileNotFoundError, ConnectionRefusedError):
             # Spawn server
-            _fork(_server, socket, program, args, input_terminator,
+            logger = _create_stderr_logger(program) # TODO rotating log
+            _fork(_server, socket, program, args, logger, input_terminator,
                   output_terminator, output_prelude_length, process_timeout,
                   server_timeout)
             # TODO stderr
@@ -343,8 +379,9 @@ def _main():
                  args.output_prelude, args.process_timeout,
                  args.server_timeout)
         elif args.subcommand == 'server':
-            _server(args.socket, args.program, args.args, input_terminator,
-                    output_terminator, args.output_prelude,
+            logger = _create_stderr_logger(args.program)
+            _server(args.socket, args.program, args.args, logger,
+                    input_terminator, output_terminator, args.output_prelude,
                     args.process_timeout, args.server_timeout)
         elif args.subcommand == 'client':
             _client(args.socket, input_terminator, output_terminator,
