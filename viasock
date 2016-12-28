@@ -178,20 +178,22 @@ def _server(socket, program, args, input_terminator, output_terminator,
                              output_prelude, output_records, server_timeout)
             while not server.shutdown_flag:
                 server.handle_request()
+            if server.exception:
+                raise server.exception
+            if proc.returncode != 0:
+                raise _ViasockError('process exited with status {}'.format(
+                    proc.returncode))
     except BrokenPipeError:
         raise _ViasockError(
             'process exited unexpectedly with status {}'.format(
             proc.returncode))
+    except KeyboardInterrupt:
+        print('Server stopped via keyboard interrupt', file=sys.stderr)
     finally:
         try:
             os.unlink(socket)
         except FileNotFoundError:
             pass
-    if server.exception:
-        raise server.exception
-    if proc.returncode != 0:
-        raise _ViasockError('process exited with status {}'.format(
-            proc.returncode))
 
 
 ### CLIENT ####################################################################
