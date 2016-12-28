@@ -129,7 +129,7 @@ class _Handler(socketserver.StreamRequestHandler):
             # store any exception so we can give an informative error message
             self.server.exception = e
             # raise it, thereby triggering the server's error handling
-            # mechanism (right?)
+            # mechanism
             raise e
 
 
@@ -153,7 +153,7 @@ class _Server(socketserver.UnixStreamServer):
     def handle_timeout(self):
         self.shutdown_flag = True
 
-    def handle_error(self):
+    def handle_error(self, request, client_address):
         self.shutdown_flag = True
 
 
@@ -168,26 +168,30 @@ def _server(socket, program, args, input_terminator, output_terminator,
             output_prelude = b''
             for i in range(output_prelude_length):
                 output_prelude += next(output_records)
-                # We could use the serve_forever and shutdown methods. However,
-                # that could lead to a race condition where the process crashes,
-                # the handle notices and calls shutdown, but the server starts
-                # handling another request before shutting down. So we handle
-                # requests in a loop and use a shutdown flag, checking whether
-                # it is set after every request:
+            # We could use the serve_forever and shutdown methods. However,
+            # that could lead to a race condition where the process crashes,
+            # the handler notices and calls shutdown, but the server starts
+            # handling another request before shutting down. So we handle
+            # requests in a loop and use a shutdown flag, checking whether
+            # it is set after every request:
             server = _Server(socket, executor, proc, input_terminator,
                              output_prelude, output_records, server_timeout)
             while not server.shutdown_flag:
                 server.handle_request()
-        if server.exception:
-            raise sever.exception
-        if proc.returncode != 0:
-            raise _ViasockError('process exited with status {}'.format(
-                proc.returncode))
+    except BrokenPipeError:
+        raise _ViasockError(
+            'process exited unexpectedly with status {}'.format(
+            proc.returncode))
     finally:
         try:
             os.unlink(socket)
         except FileNotFoundError:
             pass
+    if server.exception:
+        raise server.exception
+    if proc.returncode != 0:
+        raise _ViasockError('process exited with status {}'.format(
+            proc.returncode))
 
 
 ### CLIENT ####################################################################
