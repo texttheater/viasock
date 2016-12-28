@@ -280,6 +280,7 @@ def _socketname(program, args, process_timeout, input_terminator,
     change.
     """
     h = hashlib.md5()
+    h.update(socket.getfqdn().encode('UTF-8'))
     for x in [program] + args:
         h.update(x.encode('UTF-8'))
         h.update(str(_mtime(x)).encode('UTF-8'))
