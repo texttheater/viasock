@@ -79,6 +79,9 @@ def _records(stream, terminator_line_pattern, timeout=None):
 
 
 def _fork(fun, *args):
+    """
+    Spawns a new process that runs the given function with the given arguments.
+    """
     if os.fork() == 0:
         os.setsid()
         fun(*args)
