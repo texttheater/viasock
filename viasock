@@ -172,7 +172,8 @@ def _server_(socket, program, args, logger, input_terminator,
                  as proc:
             # Handle proc.stderr:
             def handle_stderr():
-                for line in proc.stderr:
+                for line in _records(proc.stderr, re.compile(rb''),
+                                     process_timeout):
                     # Convert line from bytes to str if possible:
                     try:
                         line = line.decode()
