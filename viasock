@@ -18,12 +18,6 @@ import threading
 import time
 
 
-## PLANNED FEATURES ###########################################################
-
-
-# TODO write server/process STDERR to a log file
-
-
 ### UTILITIES #################################################################
 
 
@@ -116,14 +110,13 @@ class _IncompleteRecord(Exception):
 ### LOGGING ###################################################################
 
 
-def _set_up_server_logging(logdir):
+def _set_up_server_logging(log):
     logger = logging.getLogger('viasock.server')
     logger.setLevel(logging.INFO)
-    if logdir is None:
+    if log is None:
         handler = logging.StreamHandler()
     else:
-        path = os.path.join(logdir, 'viasock_log')
-        handler = logging.handlers.RotatingFileHandler(maxBytes=1024*1024,
+        handler = logging.handlers.RotatingFileHandler(log, maxBytes=1024*1024,
                                                        backupCount=5)
     logger.addHandler(handler)
 
@@ -193,6 +186,7 @@ class _Server(socketserver.UnixStreamServer):
 
 def _server(socket, program, args, input_terminator, output_terminator,
             output_prelude_length, process_timeout, server_timeout):
+    logging.getLogger('viasock.server').info('[viasock server] starting')
     try:
         with concurrent.futures.ThreadPoolExecutor(2) as executor, \
              subprocess.Popen([program] + args, stdin=subprocess.PIPE,
@@ -246,12 +240,13 @@ def _server(socket, program, args, input_terminator, output_terminator,
             proc.returncode))
     except KeyboardInterrupt:
         logging.getLogger('viasock.server').info(
-            '[viasock server] stopped via keyboard interrupt)')
+            '[viasock server] received interrupt signal')
     finally:
         try:
             os.unlink(socket)
         except FileNotFoundError:
             pass
+        logging.getLogger('viasock.server').info('[viasock server] stopped')
 
 
 ### CLIENT ####################################################################
@@ -290,7 +285,7 @@ def _client(socket_path, input_terminator, output_terminator,
 
 
 def _socketname(program, args, process_timeout, input_terminator,
-                output_terminator, output_prelude_length, server_timeout):
+                output_terminator, output_prelude_length, server_timeout, log):
     """
     Returns the name for the socket: a hash of the program, its arguments and
     their modification times (or 0 for arguments that don't resolve to
@@ -308,15 +303,16 @@ def _socketname(program, args, process_timeout, input_terminator,
     h.update(output_terminator.pattern)
     h.update(bytes(output_prelude_length))
     h.update(str(server_timeout).encode('UTF-8'))
+    h.update(repr(log).encode('UTF-8'))
     return h.hexdigest()
 
 
 def _run(program, args, input_terminator, output_terminator,
-         output_prelude_length, process_timeout, server_timeout):
+         output_prelude_length, process_timeout, server_timeout, log):
     _makedirs('.viasock/sockets')
     socket = os.path.join('.viasock/sockets', _socketname(program, args,
         process_timeout, input_terminator, output_terminator,
-        output_prelude_length, server_timeout))
+        output_prelude_length, server_timeout, log))
     success = False
     for i in range(10): # Max. 10 retries
         try:
@@ -365,6 +361,7 @@ def _main():
         p.add_argument('-W', '--server-timeout', type=float, default=60,
                        help='after how many seconds to shut down the server '
                        'when there are no requests -- default is 60')
+        p.add_argument('-l', '--log', help='server log file path prefix')
     for p in (parser_run, parser_server, parser_client):
         p.add_argument('-t', '--input-terminator', default=r'',
                        metavar='PATTERN',
@@ -393,12 +390,12 @@ def _main():
         output_terminator = re.compile(args.output_terminator.encode())
     try:
         if args.subcommand == 'run':
-            _set_up_server_logging(None) # TODO logdir
+            _set_up_server_logging(args.log)
             _run(args.program, args.args, input_terminator, output_terminator,
                  args.output_prelude, args.process_timeout,
-                 args.server_timeout)
+                 args.server_timeout, args.log)
         elif args.subcommand == 'server':
-            _set_up_server_logging(None) # TODO logdir
+            _set_up_server_logging(args.log)
             _server(args.socket, args.program, args.args, input_terminator,
                     output_terminator, args.output_prelude,
                     args.process_timeout, args.server_timeout)
