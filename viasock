@@ -240,7 +240,7 @@ def _server(socket, program, args, logdir, input_terminator, output_terminator,
         _server_(socket, program, args, logger, input_terminator,
                  output_terminator, output_prelude_length, process_timeout,
                  server_timeout)
-    except Exception as e:
+    except _ViasockError as e:
         logging.getLogger('viasock.server').error(
             '[viasock server] ERROR: {}'.format(e.message))
         sys.exit(1)
