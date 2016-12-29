@@ -6,6 +6,7 @@ import concurrent.futures
 import errno
 import hashlib
 import logging
+import logging.handlers
 import os
 import re
 import select
@@ -100,19 +101,6 @@ class _IncompleteRecord(Exception):
     pass
 
 
-### LOGGING ###################################################################
-
-
-def _create_stderr_logger(program):
-    logger = logging.getLogger('Viasock process log')
-    logger.setLevel(logging.INFO)
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter(
-        '[{}] %(message)s'.format(program)))
-    logger.addHandler(handler)
-    return logger
-
-
 ### SERVER ####################################################################
 
 
@@ -174,8 +162,9 @@ class _Server(socketserver.UnixStreamServer):
         self.shutdown_flag = True
 
 
-def _server(socket, program, args, logger, input_terminator, output_terminator,
-            output_prelude_length, process_timeout, server_timeout):
+def _server_(socket, program, args, logger, input_terminator,
+             output_terminator, output_prelude_length, process_timeout,
+             server_timeout):
     try:
         with concurrent.futures.ThreadPoolExecutor(2) as executor, \
              subprocess.Popen([program] + args, stdin=subprocess.PIPE,
@@ -192,7 +181,7 @@ def _server(socket, program, args, logger, input_terminator, output_terminator,
                     # Chomp line:
                     (line,) = line.splitlines()
                     # Log line:
-                    logger.info(line)
+                    logger.info('[{}] {}'.format(program, line))
             fut_handle_stderr = executor.submit(handle_stderr)
             # Read records from proc.stdout:
             output_records = _records(proc.stdout, output_terminator,
@@ -226,12 +215,35 @@ def _server(socket, program, args, logger, input_terminator, output_terminator,
             'process exited unexpectedly with status {}'.format(
             proc.returncode))
     except KeyboardInterrupt:
-        print('Server stopped via keyboard interrupt', file=sys.stderr)
+        logging.getLogger('viasock.server').info(
+            '[viasock server] stopped via keyboard interrupt)')
     finally:
         try:
             os.unlink(socket)
         except FileNotFoundError:
             pass
+
+
+def _server(socket, program, args, logdir, input_terminator, output_terminator,
+            output_prelude_length, process_timeout, server_timeout):
+    logger = logging.getLogger('viasock.server')
+    logger.setLevel(logging.INFO)
+    if logdir is None:
+        handler = logging.StreamHandler()
+    else:
+        path = os.path.join(logdir, 'viasock_log')
+        handler = logging.handlers.RotatingFileHandler(maxBytes=1024*1024,
+                                                       backupCount=5)
+    logger.addHandler(handler)
+    try:
+        _server_(socket, program, args, logger, input_terminator,
+                 output_terminator, output_prelude_length, process_timeout,
+                 server_timeout)
+    except Exception as e:
+        logging.getLogger('viasock.server').error(
+            '[viasock server] ERROR: {}'.format(e.message))
+        sys.exit(1)
+    sys.exit()
 
 
 ### CLIENT ####################################################################
@@ -306,11 +318,9 @@ def _run(program, args, input_terminator, output_terminator,
             break
         except (FileNotFoundError, ConnectionRefusedError):
             # Spawn server
-            logger = _create_stderr_logger(program) # TODO rotating log
-            _fork(_server, socket, program, args, logger, input_terminator,
+            _fork(_server, socket, program, args, None, input_terminator,
                   output_terminator, output_prelude_length, process_timeout,
                   server_timeout)
-            # TODO stderr
             # Give the server some time to start up before retrying
             time.sleep(1)
     if not success:
@@ -379,8 +389,7 @@ def _main():
                  args.output_prelude, args.process_timeout,
                  args.server_timeout)
         elif args.subcommand == 'server':
-            logger = _create_stderr_logger(args.program)
-            _server(args.socket, args.program, args.args, logger,
+            _server(args.socket, args.program, args.args, None,
                     input_terminator, output_terminator, args.output_prelude,
                     args.process_timeout, args.server_timeout)
         elif args.subcommand == 'client':
