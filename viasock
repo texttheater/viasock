@@ -280,7 +280,8 @@ def _client(socket_path, input_terminator, output_terminator,
                     raise _ViasockClientError('server stopped sending output '
                                               'mid-record')
                 sys.stdout.buffer.write(output_record)
-                sys.stdout.buffer.flush()
+                if sys.stdout.buffer.isatty():
+                    sys.stdout.buffer.flush()
         except _IncompleteRecord:
             raise _ViasockClientError('input record was not terminated')
 
