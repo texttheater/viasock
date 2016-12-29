@@ -80,6 +80,8 @@ def _fork(fun, *args):
     """
     if os.fork() == 0:
         os.setsid()
+        # next line is to prevent forked process from holding up pipes
+        os.close(sys.stdout.fileno())
         fun(*args)
         sys.exit()
 
