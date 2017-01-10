@@ -174,9 +174,9 @@ class _Server(socketserver.UnixStreamServer):
 def _server(socket, program, args, input_terminator, output_terminator,
             output_prelude_length, process_timeout, server_timeout):
     executor = concurrent.futures.ThreadPoolExecutor(2)
-    logging.getLogger('viasock.server').info('[viasock server] starting')
     # Start server:
     server = _Server(socket, _Handler)
+    logging.getLogger('viasock.server').info('[viasock server] started')
     try: # server cleanup in finally clause
         interrupted = False
         try: # process cleanup in finally clause
