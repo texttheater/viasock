@@ -330,6 +330,9 @@ def _run(program, args, input_terminator, output_terminator,
             # accepting connections on it. The server probably crashed and
             # left the file behind. So delete it first.
             try:
+                print('[viasock run] WARNING: socket file found but connection'
+                      'refused - probably the server crashed earlier. '
+                      'Restarting.', file=sys.stderr)
                 os.unlink(socket)
             except FileNotFoundError:
                 pass
