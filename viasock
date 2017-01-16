@@ -129,6 +129,10 @@ def _set_up_server_logging(log):
 class _Handler(socketserver.StreamRequestHandler):
 
     def handle(self):
+        self.server.connection_count += 1
+        logging.getLogger('viasock.server').info(
+            '[viasock server] connection %s start',
+            self.server.connection_count)
         try:
             self.wfile.write(self.server.output_prelude)
             try:
@@ -164,6 +168,9 @@ class _Handler(socketserver.StreamRequestHandler):
             # raise it, thereby triggering the server's error handling
             # mechanism
             raise e
+        logging.getLogger('viasock.server').info(
+            '[viasock server] connection %s end',
+            self.server.connection_count)
 
 
 class _Server(socketserver.UnixStreamServer):
@@ -217,6 +224,7 @@ def _server(socket, program, args, input_terminator, output_terminator,
             server.output_prelude = output_prelude
             server.output_records = output_records
             server.exception = None
+            server.connection_count = 0
             # Server settings:
             server.shutdown_flag = False
             server.timeout = server_timeout
