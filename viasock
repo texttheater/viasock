@@ -130,7 +130,7 @@ class _Handler(socketserver.StreamRequestHandler):
 
     def handle(self):
         self.server.connection_count += 1
-        logging.getLogger('viasock.server').info(
+        logging.getLogger('viasock.server').debug(
             '[viasock server] connection %s start',
             self.server.connection_count)
         try:
@@ -138,7 +138,7 @@ class _Handler(socketserver.StreamRequestHandler):
             try:
                 for i, input_record in enumerate(_records(self.rfile,
                     self.server.input_terminator)):
-                    logging.getLogger('viasock.server').info(
+                    logging.getLogger('viasock.server').debug(
                         '[viasock server] record %s start', i)
                     # Write input to process asynchronously while already
                     # starting to read the output, otherwise writing might
@@ -157,7 +157,7 @@ class _Handler(socketserver.StreamRequestHandler):
                             'process stopped sending output mid-record')
                     fut_write.result() # raise any exception
                     self.wfile.write(output_record)
-                    logging.getLogger('viasock.server').info(
+                    logging.getLogger('viasock.server').debug(
                         '[viasock server] record %s end', i)
             except _IncompleteRecord:
                 raise _ViasockServerError(
@@ -168,7 +168,7 @@ class _Handler(socketserver.StreamRequestHandler):
             # raise it, thereby triggering the server's error handling
             # mechanism
             raise e
-        logging.getLogger('viasock.server').info(
+        logging.getLogger('viasock.server').debug(
             '[viasock server] connection %s end',
             self.server.connection_count)
 
