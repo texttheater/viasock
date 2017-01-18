@@ -70,6 +70,7 @@ def _records(stream, terminator_line_pattern, timeout=None):
             yield record
             record = b''
         _timeout(stream, timeout)
+    # TODO what if the process stops sending output mid-line?
     if record:
         raise _IncompleteRecord()
 
