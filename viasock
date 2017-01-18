@@ -81,8 +81,6 @@ def _fork(fun, *args):
     """
     if os.fork() == 0:
         os.setsid()
-        # next line is to prevent forked process from holding up pipes
-        os.close(sys.stdout.fileno())
         fun(*args)
         sys.exit()
 
@@ -130,11 +128,17 @@ def _set_up_server_logging(log):
 class _Handler(socketserver.StreamRequestHandler):
 
     def handle(self):
+        self.server.connection_count += 1
+        logging.getLogger('viasock.server').debug(
+            '[viasock server] connection %s start',
+            self.server.connection_count)
         try:
             self.wfile.write(self.server.output_prelude)
             try:
-                for input_record in _records(self.rfile,
-                                             self.server.input_terminator):
+                for i, input_record in enumerate(_records(self.rfile,
+                    self.server.input_terminator)):
+                    logging.getLogger('viasock.server').debug(
+                        '[viasock server] record %s start', i)
                     # Write input to process asynchronously while already
                     # starting to read the output, otherwise writing might
                     # deadlock:
@@ -152,6 +156,8 @@ class _Handler(socketserver.StreamRequestHandler):
                             'process stopped sending output mid-record')
                     fut_write.result() # raise any exception
                     self.wfile.write(output_record)
+                    logging.getLogger('viasock.server').debug(
+                        '[viasock server] record %s end', i)
             except _IncompleteRecord:
                 raise _ViasockServerError(
                     'client did not terminate input record')
@@ -161,6 +167,9 @@ class _Handler(socketserver.StreamRequestHandler):
             # raise it, thereby triggering the server's error handling
             # mechanism
             raise e
+        logging.getLogger('viasock.server').debug(
+            '[viasock server] connection %s end',
+            self.server.connection_count)
 
 
 class _Server(socketserver.UnixStreamServer):
@@ -173,7 +182,12 @@ class _Server(socketserver.UnixStreamServer):
 
 
 def _server(socket, program, args, input_terminator, output_terminator,
-            output_prelude_length, process_timeout, server_timeout):
+            output_prelude_length, process_timeout, server_timeout, log):
+    # Prevent forked process from holding up pipes etc.:
+    os.close(sys.stdout.fileno())
+    if log is not None:
+        os.close(sys.stderr.fileno())
+    # Created executor:
     executor = concurrent.futures.ThreadPoolExecutor(2)
     try: # server cleanup in finally clause
         server = _Server(socket, _Handler)
@@ -214,6 +228,7 @@ def _server(socket, program, args, input_terminator, output_terminator,
             server.output_prelude = output_prelude
             server.output_records = output_records
             server.exception = None
+            server.connection_count = 0
             # Server settings:
             server.shutdown_flag = False
             server.timeout = server_timeout
@@ -339,7 +354,7 @@ def _run(program, args, input_terminator, output_terminator,
                 pass
         _fork(_server, socket, program, args, input_terminator,
               output_terminator, output_prelude_length, process_timeout,
-              server_timeout)
+              server_timeout, log)
         # Give the new server some time to start (or for the one started by
         # another viasock run instance to come up, in which case our server
         # will silently go down because the socket is already in use):
@@ -421,7 +436,7 @@ def _main():
             _set_up_server_logging(args.log)
             _server(args.socket, args.program, args.args, input_terminator,
                     output_terminator, args.output_prelude,
-                    args.process_timeout, args.server_timeout)
+                    args.process_timeout, args.server_timeout, args.log)
         elif args.subcommand == 'client':
             _client(args.socket, input_terminator, output_terminator,
                     args.output_prelude)
