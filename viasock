@@ -80,8 +80,6 @@ def _fork(fun, *args):
     """
     if os.fork() == 0:
         os.setsid()
-        # next line is to prevent forked process from holding up pipes
-        os.close(sys.stdout.fileno())
         fun(*args)
         sys.exit()
 
@@ -183,7 +181,12 @@ class _Server(socketserver.UnixStreamServer):
 
 
 def _server(socket, program, args, input_terminator, output_terminator,
-            output_prelude_length, process_timeout, server_timeout):
+            output_prelude_length, process_timeout, server_timeout, log):
+    # Prevent forked process from holding up pipes etc.:
+    os.close(sys.stdout.fileno())
+    if log is not None:
+        os.close(sys.stderr.fileno())
+    # Created executor:
     executor = concurrent.futures.ThreadPoolExecutor(2)
     try: # server cleanup in finally clause
         server = _Server(socket, _Handler)
@@ -350,7 +353,7 @@ def _run(program, args, input_terminator, output_terminator,
                 pass
         _fork(_server, socket, program, args, input_terminator,
               output_terminator, output_prelude_length, process_timeout,
-              server_timeout)
+              server_timeout, log)
         # Give the new server some time to start (or for the one started by
         # another viasock run instance to come up, in which case our server
         # will silently go down because the socket is already in use):
@@ -432,7 +435,7 @@ def _main():
             _set_up_server_logging(args.log)
             _server(args.socket, args.program, args.args, input_terminator,
                     output_terminator, args.output_prelude,
-                    args.process_timeout, args.server_timeout)
+                    args.process_timeout, args.server_timeout, args.log)
         elif args.subcommand == 'client':
             _client(args.socket, input_terminator, output_terminator,
                     args.output_prelude)
