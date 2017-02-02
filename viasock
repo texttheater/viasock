@@ -177,6 +177,8 @@ class _Server(socketserver.UnixStreamServer):
         self.shutdown_flag = True
 
     def handle_error(self, request, client_address):
+        self.proc.kill()
+        logging.getLogger('viasock server').info('killed process')
         self.shutdown_flag = True
 
 
