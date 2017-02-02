@@ -50,7 +50,7 @@ def _timeout(stream, timeout):
     if timeout is not None:
         ready, _, _ = select.select((stream,), (), (), timeout)
         if not ready:
-            raise _ViasockServerError('process took to long to answer')
+            raise _ViasockServerError('process took too long to answer')
 
 
 def _records(stream, terminator_line_pattern, timeout=None):
