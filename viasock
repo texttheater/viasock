@@ -50,7 +50,7 @@ def _timeout(stream, timeout):
     if timeout is not None:
         ready, _, _ = select.select((stream,), (), (), timeout)
         if not ready:
-            raise _ViasockServerError('process took to long to answer')
+            raise _ViasockServerError('process took too long to answer')
 
 
 def _records(stream, terminator_line_pattern, timeout=None):
@@ -112,13 +112,15 @@ class _IncompleteRecord(Exception):
 
 
 def _set_up_server_logging(log):
-    logger = logging.getLogger('viasock.server')
+    logger = logging.getLogger('viasock server')
     logger.setLevel(logging.INFO)
     if log is None:
         handler = logging.StreamHandler()
     else:
         handler = logging.handlers.RotatingFileHandler(log, maxBytes=1024*1024,
                                                        backupCount=5)
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     logger.addHandler(handler)
 
 
@@ -129,16 +131,15 @@ class _Handler(socketserver.StreamRequestHandler):
 
     def handle(self):
         self.server.connection_count += 1
-        logging.getLogger('viasock.server').debug(
-            '[viasock server] connection %s start',
+        logging.getLogger('viasock server').info('connection %s start',
             self.server.connection_count)
         try:
             self.wfile.write(self.server.output_prelude)
             try:
                 for i, input_record in enumerate(_records(self.rfile,
                     self.server.input_terminator)):
-                    logging.getLogger('viasock.server').debug(
-                        '[viasock server] record %s start', i)
+                    logging.getLogger('viasock server').info(
+                        'record %s start', i)
                     # Write input to process asynchronously while already
                     # starting to read the output, otherwise writing might
                     # deadlock:
@@ -156,8 +157,8 @@ class _Handler(socketserver.StreamRequestHandler):
                             'process stopped sending output mid-record')
                     fut_write.result() # raise any exception
                     self.wfile.write(output_record)
-                    logging.getLogger('viasock.server').debug(
-                        '[viasock server] record %s end', i)
+                    logging.getLogger('viasock server').info('record %s end',
+                                                              i)
             except _IncompleteRecord:
                 raise _ViasockServerError(
                     'client did not terminate input record')
@@ -167,8 +168,7 @@ class _Handler(socketserver.StreamRequestHandler):
             # raise it, thereby triggering the server's error handling
             # mechanism
             raise e
-        logging.getLogger('viasock.server').debug(
-            '[viasock server] connection %s end',
+        logging.getLogger('viasock server').info('connection %s end',
             self.server.connection_count)
 
 
@@ -178,6 +178,8 @@ class _Server(socketserver.UnixStreamServer):
         self.shutdown_flag = True
 
     def handle_error(self, request, client_address):
+        self.proc.kill()
+        logging.getLogger('viasock server').info('killed process')
         self.shutdown_flag = True
 
 
@@ -191,7 +193,7 @@ def _server(socket, program, args, input_terminator, output_terminator,
     executor = concurrent.futures.ThreadPoolExecutor(2)
     try: # server cleanup in finally clause
         server = _Server(socket, _Handler)
-        logging.getLogger('viasock.server').info('[viasock server] started')
+        logging.getLogger('viasock server').info('started')
         interrupted = False
         try: # process cleanup in finally clause
             proc = None
@@ -201,7 +203,7 @@ def _server(socket, program, args, input_terminator, output_terminator,
                                     stderr=subprocess.PIPE)
             # Handle proc.stderr:
             def handle_stderr():
-                logger = logging.getLogger('viasock.server')
+                logger = logging.getLogger('viasock server')
                 for line in _records(proc.stderr, re.compile(rb''),
                                      process_timeout):
                     # Convert line from bytes to str if possible:
@@ -212,7 +214,7 @@ def _server(socket, program, args, input_terminator, output_terminator,
                     # Chomp line:
                     (line,) = line.splitlines()
                     # Log line:
-                    logger.info('[{}] {}'.format(program, line))
+                    logger.info('{}: {}'.format(program, line))
             fut_handle_stderr = executor.submit(handle_stderr)
             # Read records from proc.stdout:
             output_records = _records(proc.stdout, output_terminator,
@@ -243,8 +245,8 @@ def _server(socket, program, args, input_terminator, output_terminator,
                 while not server.shutdown_flag:
                     server.handle_request()
             except KeyboardInterrupt:
-                logging.getLogger('viasock.server').info(
-                    '[viasock server] received interrupt signal')
+                logging.getLogger('viasock server').info(
+                    'received interrupt signal')
                 interrupted = True
             # Error handling:
             if server.exception:
@@ -268,7 +270,7 @@ def _server(socket, program, args, input_terminator, output_terminator,
             os.unlink(socket)
         except FileNotFoundError:
             pass
-        logging.getLogger('viasock.server').info('[viasock server] stopped')
+        logging.getLogger('viasock server').info('stopped')
 
 
 ### CLIENT ####################################################################
@@ -446,8 +448,7 @@ def _main():
         print('[viasock run] ERROR: {}'.format(e.message), file=sys.stderr)
         sys.exit(1)
     except _ViasockServerError as e:
-        logging.getLogger('viasock.server').error(
-            '[viasock server] ERROR: {}'.format(e.message))
+        logging.getLogger('viasock server').error(e.message)
         sys.exit(1)
     except _ViasockClientError as e:
         print('[viasock client] ERROR: {}'.format(e.message), file=sys.stderr)
