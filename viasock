@@ -46,11 +46,30 @@ def _makedirs(path):
             raise error
 
 
-def _timeout(stream, timeout):
-    if timeout is not None:
-        ready, _, _ = select.select((stream,), (), (), timeout)
-        if not ready:
-            raise _ViasockServerError('process took too long to answer')
+def _lines(stream, timeout=None):
+    """
+    Returns the sequence of lines from a file-like object. If timeout is not
+    None, it must be a number. Will then wait for at most that many seconds for
+    stream to be ready for reading, otherwise throws TimeoutError.
+    """
+    buf = b''
+    while True:
+        if timeout is not None:
+            ready, _, _ = select.select((stream,), (), (), timeout)
+            if not ready:
+                raise TimeoutError()
+        chunk = os.read(stream.fileno(), 2048)
+        if not chunk:
+            if buf:
+                yield buf
+            break
+        buf += chunk
+        while True:
+            pos = buf.find(b'\n')
+            if pos == -1:
+                break
+            yield buf[:pos + 1]
+            buf = buf[pos + 1:]
 
 
 def _records(stream, terminator_line_pattern, timeout=None):
@@ -62,14 +81,12 @@ def _records(stream, terminator_line_pattern, timeout=None):
     terminator pattern.
     """
     record = b''
-    _timeout(stream, timeout)
-    for line in stream:
+    for line in _lines(stream, timeout):
         record += line
         (chomped,) = line.splitlines()
         if terminator_line_pattern.match(chomped):
             yield record
             record = b''
-        _timeout(stream, timeout)
     if record:
         raise _IncompleteRecord()
 
@@ -148,6 +165,9 @@ class _Handler(socketserver.StreamRequestHandler):
                     fut_write = self.server.executor.submit(write)
                     try:
                         output_record = next(self.server.output_records)
+                    except TimeoutError:
+                        raise _ViasockServerError(
+                            'process took too long to answer')
                     except StopIteration:
                         raise _ViasockServerError(
                             'process stopped sending output')
@@ -193,77 +213,71 @@ def _server(socket, program, args, input_terminator, output_terminator,
     try: # server cleanup in finally clause
         server = _Server(socket, _Handler)
         logging.getLogger('viasock server').info('started')
-        interrupted = False
-        try: # process cleanup in finally clause
-            proc = None
-            # Start process:
-            proc = subprocess.Popen([program] + args, stdin=subprocess.PIPE,
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE)
-            # Handle proc.stderr:
-            def handle_stderr():
-                logger = logging.getLogger('viasock server')
-                for line in _records(proc.stderr, re.compile(rb''),
-                                     process_timeout):
-                    # Convert line from bytes to str if possible:
-                    try:
-                        line = line.decode()
-                    except UnicodeDecodeError:
-                        pass
-                    # Chomp line:
-                    (line,) = line.splitlines()
-                    # Log line:
-                    logger.info('{}: {}'.format(program, line))
-            fut_handle_stderr = executor.submit(handle_stderr)
-            # Read records from proc.stdout:
-            output_records = _records(proc.stdout, output_terminator,
-                                      process_timeout)
-            # Determine the output prelude:
-            output_prelude = b''
-            for i in range(output_prelude_length):
-                output_prelude += next(output_records)
-            # Store things needed by _Handler objects in server:
-            server.executor = executor
-            server.proc = proc
-            server.input_terminator = input_terminator
-            server.output_prelude = output_prelude
-            server.output_records = output_records
-            server.exception = None
-            server.connection_count = 0
-            # Server settings:
-            server.shutdown_flag = False
-            server.timeout = server_timeout
-            # Handle requests
-            # We could use the serve_forever and shutdown methods. However,
-            # that could lead to a race condition where the process crashes,
-            # the handler notices and calls shutdown, but the server starts
-            # handling another request before shutting down. So we handle
-            # requests in a loop and use a shutdown flag, checking whether
-            # it is set after every request:
-            try:
-                while not server.shutdown_flag:
-                    server.handle_request()
-            except KeyboardInterrupt:
-                logging.getLogger('viasock server').info(
-                    'received interrupt signal')
-                interrupted = True
-            # Error handling:
-            if server.exception:
-                raise server.exception
-        finally:
-            if proc is not None and not interrupted:
-                proc.stdin.close()
-                proc.wait()
+        # Start process:
+        proc = subprocess.Popen([program] + args, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE)
+        # Handle proc.stderr:
+        def handle_stderr():
+            logger = logging.getLogger('viasock server')
+            for line in proc.stderr:
+                # Convert line from bytes to str if possible:
                 try:
-                    fut_handle_stderr.result()
-                except BrokenPipeError:
-                    raise _ViasockServerError(
-                        'process exited unexpectedly with status {}'.format(
-                        proc.returncode))
-                if proc.returncode != 0:
-                    raise _ViasockServerError(
-                        'process exited with status {}'.format(
-                        proc.returncode))
+                    line = line.decode()
+                except UnicodeDecodeError:
+                    pass
+                # Chomp line:
+                (line,) = line.splitlines()
+                # Log line:
+                logger.info('{}: {}'.format(program, line))
+        fut_handle_stderr = executor.submit(handle_stderr)
+        # Read records from proc.stdout:
+        output_records = _records(proc.stdout, output_terminator,
+                                  process_timeout)
+        # Determine the output prelude:
+        output_prelude = b''
+        for i in range(output_prelude_length):
+            output_prelude += next(output_records)
+        # Store things needed by _Handler objects in server:
+        server.executor = executor
+        server.proc = proc
+        server.input_terminator = input_terminator
+        server.output_prelude = output_prelude
+        server.output_records = output_records
+        server.exception = None
+        server.connection_count = 0
+        # Server settings:
+        server.shutdown_flag = False
+        server.timeout = server_timeout
+        # Handle requests
+        # We could use the serve_forever and shutdown methods. However,
+        # that could lead to a race condition where the process crashes,
+        # the handler notices and calls shutdown, but the server starts
+        # handling another request before shutting down. So we handle
+        # requests in a loop and use a shutdown flag, checking whether
+        # it is set after every request:
+        while not server.shutdown_flag:
+            server.handle_request()
+        # Error handling:
+        if server.exception:
+            proc.kill()
+            raise server.exception
+        # Clean up process:
+        proc.stdin.close()
+        try:
+            proc.wait(process_timeout)
+        except subprocess.TimeoutExpired:
+            raise _ViasockError('process took too long to exit')
+        try:
+            fut_handle_stderr.result()
+        except BrokenPipeError:
+            raise _ViasockServerError(
+                'process exited unexpectedly with status {}'.format(
+                proc.returncode))
+        if proc.returncode != 0:
+            raise _ViasockServerError(
+                'process exited with status {}'.format(
+                proc.returncode))
     finally:
         try:
             os.unlink(socket)
