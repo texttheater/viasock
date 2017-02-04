@@ -53,8 +53,8 @@ Programs that can be called through Viasock must
 * output exactly one output record for each input record, and output it before
   it blocks waiting for the next input record.
 
-A record is a single line by default, but this can be configured with the `-t`
-and `-T` options.
+Every record must end with `\n` (the line feed character). A record is a single
+line by default, but this can be configured with the `-t` and `-T` options.
 
 The output may contain a number of extra records at the beginning which don’t
 correspond to any input records and should be repeated at the beginning of the
