@@ -204,13 +204,13 @@ def _server(socket, program, args, input_terminator, output_terminator,
         handler = logging.handlers.RotatingFileHandler(log, maxBytes=1024*1024,
                                                        backupCount=5)
     handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        '%(asctime)s - %(name)s - %(process)d - %(levelname)s - %(message)s'))
     logger.addHandler(handler)
-    # Created executor:
+    # Create executor:
     executor = concurrent.futures.ThreadPoolExecutor(2)
     try: # server cleanup in finally clause
         server = _Server(socket, _Handler)
-        logger.info('started (PID %s, socket %s)', os.getpid(), socket)
+        logger.info('started')
         # Start process:
         proc = subprocess.Popen([program] + args, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE,
@@ -286,8 +286,8 @@ def _server(socket, program, args, input_terminator, output_terminator,
             os.unlink(socket)
         except FileNotFoundError:
             pass
-        logger.info('stopped (PID %s, socket %s)', os.getpid(), socket)
-        logging.shutdown()
+        logger.info('stopped')
+        handler.close()
 
 
 ### CLIENT ####################################################################
@@ -295,6 +295,15 @@ def _server(socket, program, args, input_terminator, output_terminator,
 
 def _client(socket_path, input_terminator, output_terminator,
             output_prelude_length):
+    # Set up logging:
+    logger = logging.getLogger('viasock client')
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(process)d - %(levelname)s - %(message)s'))
+        logger.addHandler(handler)
+    # Talk to socket server:
     with socket.socket(socket.AF_UNIX) as sock:
         sock.connect(socket_path)
         wfile = sock.makefile('wb')
@@ -311,15 +320,17 @@ def _client(socket_path, input_terminator, output_terminator,
                 try:
                     output_record = next(output_records)
                 except StopIteration:
-                    raise _ViasockClientError('server stopped sending output')
+                    logger.error('server stopped sending output')
+                    raise RuntimeError()
                 except _IncompleteRecord:
-                    raise _ViasockClientError('server stopped sending output '
-                                              'mid-record')
+                    logger.error('server stopped sending output mid-record')
+                    raise RuntimeError()
                 sys.stdout.buffer.write(output_record)
                 if sys.stdout.buffer.isatty():
                     sys.stdout.buffer.flush()
         except _IncompleteRecord:
-            raise _ViasockClientError('input record was not terminated')
+            logger.error('input record was not terminated')
+            raise RuntimeError()
 
 
 ### RUN #######################################################################
@@ -350,11 +361,20 @@ def _socketname(program, args, process_timeout, input_terminator,
 
 def _run(program, args, input_terminator, output_terminator,
          output_prelude_length, process_timeout, server_timeout, log):
+    # Set up logging:
+    logger = logging.getLogger('viasock run')
+    logger.setLevel(logging.INFO)
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(process)d - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
+    # Prepare:
     _makedirs('.viasock/sockets')
     socket = os.path.join('.viasock/sockets', _socketname(program, args,
         process_timeout, input_terminator, output_terminator,
         output_prelude_length, server_timeout, log))
     success = False
+    # Use server (spawn it first if needed):
     try:
         _client(socket, input_terminator, output_terminator,
                 output_prelude_length)
@@ -365,9 +385,8 @@ def _run(program, args, input_terminator, output_terminator,
             # accepting connections on it. The server probably crashed and
             # left the file behind. So delete it first.
             try:
-                print('[viasock run] WARNING: socket file found but connection'
-                      ' refused - probably the server crashed earlier. '
-                      'Restarting.', file=sys.stderr)
+                logger.warning('Socket file found but connection refused. '
+                               'Probably the server had crashed earlier.')
                 os.unlink(socket)
             except FileNotFoundError:
                 pass
@@ -383,9 +402,9 @@ def _run(program, args, input_terminator, output_terminator,
             _client(socket, input_terminator, output_terminator,
                 output_prelude_length)
         except (FileNotFoundError, ConnectionRefusedError):
-            raise _ViasockRunError('[viasock run] ERROR: 1s after spawning a '
-                                   'server, it is still not accepting '
-                                   'connections. Something is probably wrong.')
+            logger.error('1s after spawning a server, it is still not '
+                         'accepting connections. Something is probably wrong.')
+            raise RuntimeError()
 
 
 ### MAIN ######################################################################
@@ -451,22 +470,15 @@ def _main():
                  args.output_prelude, args.process_timeout,
                  args.server_timeout, args.log)
         elif args.subcommand == 'server':
-            try:
                 _server(args.socket, args.program, args.args, input_terminator,
                         output_terminator, args.output_prelude,
                         args.process_timeout, args.server_timeout, args.log)
-            except:
-                sys.exit(1)
         elif args.subcommand == 'client':
             _client(args.socket, input_terminator, output_terminator,
                     args.output_prelude)
         else:
             parser.print_help()
-    except _ViasockRunError as e:
-        print('[viasock run] ERROR: {}'.format(e.message), file=sys.stderr)
-        sys.exit(1)
-    except _ViasockClientError as e:
-        print('[viasock client] ERROR: {}'.format(e.message), file=sys.stderr)
+    except:
         sys.exit(1)
 
 
