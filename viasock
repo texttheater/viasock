@@ -97,8 +97,11 @@ def _fork(fun, *args):
     """
     if os.fork() == 0:
         os.setsid()
-        fun(*args)
-        sys.exit()
+        try:
+            fun(*args)
+            os._exit(0)
+        except:
+            os._exit(1)
 
 
 class _ViasockError(Exception):
@@ -272,6 +275,12 @@ def _server(socket, program, args, input_terminator, output_terminator,
             raise _ViasockServerError(
                 'process exited with status {}'.format(
                 proc.returncode))
+    except _ViasockServerError as e:
+        logger.error(e.message)
+        raise RuntimeError()
+    except:
+        logger.exception('exception')
+        raise RuntimeError()
     finally:
         try:
             os.unlink(socket)
@@ -442,9 +451,12 @@ def _main():
                  args.output_prelude, args.process_timeout,
                  args.server_timeout, args.log)
         elif args.subcommand == 'server':
-            _server(args.socket, args.program, args.args, input_terminator,
-                    output_terminator, args.output_prelude,
-                    args.process_timeout, args.server_timeout, args.log)
+            try:
+                _server(args.socket, args.program, args.args, input_terminator,
+                        output_terminator, args.output_prelude,
+                        args.process_timeout, args.server_timeout, args.log)
+            except:
+                sys.exit(1)
         elif args.subcommand == 'client':
             _client(args.socket, input_terminator, output_terminator,
                     args.output_prelude)
@@ -452,9 +464,6 @@ def _main():
             parser.print_help()
     except _ViasockRunError as e:
         print('[viasock run] ERROR: {}'.format(e.message), file=sys.stderr)
-        sys.exit(1)
-    except _ViasockServerError as e:
-        logging.getLogger('viasock server').error(e.message)
         sys.exit(1)
     except _ViasockClientError as e:
         print('[viasock client] ERROR: {}'.format(e.message), file=sys.stderr)
