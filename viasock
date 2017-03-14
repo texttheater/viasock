@@ -124,22 +124,6 @@ class _IncompleteRecord(Exception):
     pass
 
 
-### LOGGING ###################################################################
-
-
-def _set_up_server_logging(log):
-    logger = logging.getLogger('viasock server')
-    logger.setLevel(logging.INFO)
-    if log is None:
-        handler = logging.StreamHandler()
-    else:
-        handler = logging.handlers.RotatingFileHandler(log, maxBytes=1024*1024,
-                                                       backupCount=5)
-    handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-    logger.addHandler(handler)
-
-
 ### SERVER ####################################################################
 
 
@@ -208,18 +192,28 @@ def _server(socket, program, args, input_terminator, output_terminator,
     os.close(sys.stdout.fileno())
     if log is not None:
         os.close(sys.stderr.fileno())
+    # Set up logging:
+    logger = logging.getLogger('viasock server')
+    logger.setLevel(logging.INFO)
+    if log is None:
+        handler = logging.StreamHandler()
+    else:
+        handler = logging.handlers.RotatingFileHandler(log, maxBytes=1024*1024,
+                                                       backupCount=5)
+    handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(handler)
     # Created executor:
     executor = concurrent.futures.ThreadPoolExecutor(2)
     try: # server cleanup in finally clause
         server = _Server(socket, _Handler)
-        logging.getLogger('viasock server').info('started (PID %s, socket %s)', os.getpid(), socket)
+        logger.info('started (PID %s, socket %s)', os.getpid(), socket)
         # Start process:
         proc = subprocess.Popen([program] + args, stdin=subprocess.PIPE,
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE)
         # Handle proc.stderr:
         def handle_stderr():
-            logger = logging.getLogger('viasock server')
             for line in proc.stderr:
                 # Convert line from bytes to str if possible:
                 try:
@@ -283,7 +277,8 @@ def _server(socket, program, args, input_terminator, output_terminator,
             os.unlink(socket)
         except FileNotFoundError:
             pass
-        logging.getLogger('viasock server').info('stopped (PID %s, socket %s)', os.getpid(), socket)
+        logger.info('stopped (PID %s, socket %s)', os.getpid(), socket)
+        logging.shutdown()
 
 
 ### CLIENT ####################################################################
@@ -443,12 +438,10 @@ def _main():
         output_terminator = re.compile(args.output_terminator.encode())
     try:
         if args.subcommand == 'run':
-            _set_up_server_logging(args.log)
             _run(args.program, args.args, input_terminator, output_terminator,
                  args.output_prelude, args.process_timeout,
                  args.server_timeout, args.log)
         elif args.subcommand == 'server':
-            _set_up_server_logging(args.log)
             _server(args.socket, args.program, args.args, input_terminator,
                     output_terminator, args.output_prelude,
                     args.process_timeout, args.server_timeout, args.log)
