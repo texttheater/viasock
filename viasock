@@ -204,7 +204,8 @@ def _server(socket, program, args, input_terminator, output_terminator,
         handler = logging.handlers.RotatingFileHandler(log, maxBytes=1024*1024,
                                                        backupCount=5)
     handler.setFormatter(logging.Formatter(
-        '%(asctime)s - %(name)s - %(process)d - %(levelname)s - %(message)s'))
+        ('%(asctime)s - %(name)s - {} - %(process)d - %(levelname)s - '
+        '%(message)s').format(socket)))
     logger.addHandler(handler)
     # Create executor:
     executor = concurrent.futures.ThreadPoolExecutor(2)
