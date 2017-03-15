@@ -264,7 +264,7 @@ def _server(socket, program, args, input_terminator, output_terminator,
         try:
             proc.wait(process_timeout)
         except subprocess.TimeoutExpired:
-            raise _ViasockError('process took too long to exit')
+            raise _ViasockServerError('process took too long to exit')
         try:
             fut_handle_stderr.result()
         except BrokenPipeError:
