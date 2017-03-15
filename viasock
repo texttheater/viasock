@@ -140,7 +140,7 @@ class _Handler(socketserver.StreamRequestHandler):
             self.wfile.write(self.server.output_prelude)
             try:
                 for i, input_record in enumerate(_records(self.rfile,
-                    self.server.input_terminator)):
+                    self.server.input_terminator), start=1):
                     logging.getLogger('viasock server').info(
                         'record %s start', i)
                     # Write input to process asynchronously while already
