@@ -3,6 +3,13 @@ viasock
 
 Avoid startup overhead by automagically serverizing your scripts.
 
+Video introduction
+------------------
+
+[![Kilian Evang giving a talk titled “Viasock: Automagically Serverize Your Scripts” at PyGrunn 2017](http://img.youtube.com/vi/sRQdiedyCA0/0.jpg)](https://www.youtube.com/watch?v=sRQdiedyCA0)
+
+[video](https://www.youtube.com/watch?v=sRQdiedyCA0), [slides](https://texttheater.github.io/viasock-pygrunn2017)
+
 What it does
 ------------
 
