@@ -201,6 +201,7 @@ def _server(socket, program, args, input_terminator, output_terminator,
     if log is None:
         handler = logging.StreamHandler()
     else:
+        _makedirs(os.path.dirname(log))
         handler = logging.handlers.RotatingFileHandler(log, maxBytes=1024*1024,
                                                        backupCount=5)
     handler.setFormatter(logging.Formatter(
@@ -404,7 +405,8 @@ def _run(program, args, input_terminator, output_terminator,
                 output_prelude_length)
         except (FileNotFoundError, ConnectionRefusedError):
             logger.error('1s after spawning a server, it is still not '
-                         'accepting connections. Something is probably wrong.')
+                         'accepting connections. Check %s for error messages.',
+                         log)
             raise RuntimeError()
 
 
