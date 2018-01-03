@@ -164,6 +164,7 @@ class _Handler(socketserver.StreamRequestHandler):
                     self.wfile.write(output_record)
                     logging.getLogger('viasock server').info('record %s end',
                                                               i)
+                    self.server.last_request_time = time.time()
             except _IncompleteRecord:
                 raise _ViasockServerError(
                     'client did not terminate input record')
@@ -179,13 +180,9 @@ class _Handler(socketserver.StreamRequestHandler):
 
 class _Server(socketserver.UnixStreamServer):
 
-    def handle_timeout(self):
-        self.shutdown_flag = True
-
     def handle_error(self, request, client_address):
-        self.proc.kill()
-        logging.getLogger('viasock server').info('killed process')
-        self.shutdown_flag = True
+        if not self.exception:
+            self.exception = RuntimeError('unknown error')
 
 
 def _server(socket, program, args, input_terminator, output_terminator,
@@ -245,22 +242,24 @@ def _server(socket, program, args, input_terminator, output_terminator,
         server.output_records = output_records
         server.exception = None
         server.connection_count = 0
+        server.last_request_time = time.time()
         # Server settings:
         server.shutdown_flag = False
-        server.timeout = server_timeout
+        server.timeout = 1 # check every 1s whether we should stop
         # Handle requests
-        # We could use the serve_forever and shutdown methods. However,
-        # that could lead to a race condition where the process crashes,
-        # the handler notices and calls shutdown, but the server starts
-        # handling another request before shutting down. So we handle
-        # requests in a loop and use a shutdown flag, checking whether
-        # it is set after every request:
-        while not server.shutdown_flag:
+        while True:
+            if command_hash is not None and _command_hash(program, args,
+                process_timeout, input_terminator, output_terminator,
+                output_prelude_length, server_timeout, log) != command_hash:
+                break
+            if time.time() - server.last_request_time > server_timeout:
+                break
             server.handle_request()
-        # Error handling:
-        if server.exception:
-            proc.kill()
-            raise server.exception
+            # Error handling:
+            if server.exception:
+                proc.kill()
+                logger.info('killed process')
+                raise server.exception
         # Clean up process:
         proc.stdin.close()
         try:
