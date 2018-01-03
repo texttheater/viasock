@@ -189,7 +189,8 @@ class _Server(socketserver.UnixStreamServer):
 
 
 def _server(socket, program, args, input_terminator, output_terminator,
-            output_prelude_length, process_timeout, server_timeout, log):
+            output_prelude_length, process_timeout, server_timeout, log,
+            command_hash):
     # Prevent forked process from holding up pipes etc.:
     os.close(sys.stdout.fileno())
     if log is not None:
@@ -337,7 +338,7 @@ def _client(socket_path, input_terminator, output_terminator,
 ### RUN #######################################################################
 
 
-def _socketname(program, args, process_timeout, input_terminator,
+def _command_hash(program, args, process_timeout, input_terminator,
                 output_terminator, output_prelude_length, server_timeout, log):
     """
     Returns the name for the socket: a hash of the program, its arguments and
@@ -371,9 +372,10 @@ def _run(program, args, input_terminator, output_terminator,
     logger.addHandler(handler)
     # Prepare:
     _makedirs('.viasock/sockets')
-    socket = os.path.join('.viasock/sockets', _socketname(program, args,
+    command_hash = _command_hash(program, args,
         process_timeout, input_terminator, output_terminator,
-        output_prelude_length, server_timeout, log))
+        output_prelude_length, server_timeout, log)
+    socket = os.path.join('.viasock/sockets', command_hash)
     success = False
     # Use server (spawn it first if needed):
     try:
@@ -393,7 +395,7 @@ def _run(program, args, input_terminator, output_terminator,
                 pass
         _fork(_server, socket, program, args, input_terminator,
               output_terminator, output_prelude_length, process_timeout,
-              server_timeout, log)
+              server_timeout, log, command_hash)
         # Give the new server some time to start (or for the one started by
         # another viasock run instance to come up, in which case our server
         # will silently go down because the socket is already in use):
@@ -424,6 +426,9 @@ def _main():
         help='run a command wrapped in a socket server')
     parser_server.add_argument('socket',
         help='the socket file the server should listen on')
+    parser_server.add_argument('hash',
+        help='a hash of the program and its arguments; server will stop when '
+             'they no longer match the hash')
     parser_client = subparsers.add_parser('client',
         help='connect to a socket for input and output')
     parser_client.add_argument('socket',
@@ -474,7 +479,8 @@ def _main():
         elif args.subcommand == 'server':
                 _server(args.socket, args.program, args.args, input_terminator,
                         output_terminator, args.output_prelude,
-                        args.process_timeout, args.server_timeout, args.log)
+                        args.process_timeout, args.server_timeout, args.log,
+                        args.hash)
         elif args.subcommand == 'client':
             _client(args.socket, input_terminator, output_terminator,
                     args.output_prelude)
