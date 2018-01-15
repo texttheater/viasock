@@ -1,4 +1,4 @@
-![Viasock logo](img/viasock_logo_200.png)
+![Viasock logo](img/viasock_logo_150.png)
 =========================================
 
 Avoid startup overhead by automagically serverizing your scripts.
