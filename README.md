@@ -1,5 +1,5 @@
-viasock
-=======
+![Viasock logo](img/viasock_logo_300.png)
+=========================================
 
 Avoid startup overhead by automagically serverizing your scripts.
 
@@ -81,3 +81,8 @@ Getting involved
 
 * Check out the list of issues or submit your own at
   https://github.com/texttheater/viasock/issues
+
+Acknowledgments
+---------------
+
+The Viasock logo was designed by [Valerio Basile](https://valeriobasile.github.io).
