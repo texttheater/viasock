@@ -312,9 +312,13 @@ def _client(socket_path, input_terminator, output_terminator,
         output_records = _records(rfile, output_terminator)
         try:
             for i in range(output_prelude_length):
-                sys.stdout.buffer.write(next(output_records))
-                if sys.stdout.buffer.isatty():
-                    sys.stdout.buffer.flush()
+                try:
+                    sys.stdout.buffer.write(next(output_records))
+                    if sys.stdout.buffer.isatty():
+                        sys.stdout.buffer.flush()
+                except ConnectionResetError:
+                    logger.error('connection reset by server')
+                    raise RuntimeError()
             for input_record in _records(sys.stdin.buffer, input_terminator):
                 wfile.write(input_record)
                 wfile.flush()
@@ -326,7 +330,7 @@ def _client(socket_path, input_terminator, output_terminator,
                 except _IncompleteRecord:
                     logger.error('server stopped sending output mid-record')
                     raise RuntimeError()
-                except ConnectionResetError: # TODO try new connection?
+                except ConnectionResetError:
                     logger.error('connection reset by server')
                     raise RuntimeError()
                 sys.stdout.buffer.write(output_record)
