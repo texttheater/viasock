@@ -491,11 +491,7 @@ def _main():
                     args.output_prelude)
         else:
             parser.print_help()
-    # FIXME We are using RuntimeErrors without any arguments to signal to _main
-    # that the error has been logged and it should just terminate. This is not
-    # very elegant; at least we should define a separate error class for this
-    # purpose.
-    except RuntimeError:
+    except: # assume errors have already been logged/handled
         sys.exit(1)
 
 
